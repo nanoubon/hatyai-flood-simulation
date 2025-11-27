@@ -1,128 +1,112 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-// หมายเหตุ: ตรวจสอบ path ของ api ให้ถูกต้อง หรือสร้างไฟล์ mock type ไว้ถ้ายังไม่ได้แปลงไฟล์ api เป็น ts
+
+// APIs
 import { fetchWeather } from './api/weather';
 import { fetchGistdaData } from './api/gistda';
 import { fetchRiverData } from './api/flood';
 import { fetchBuildings } from './api/buildings';
+
+// Types & Utils
+import { WeatherData, FloodData, GistdaData, GistdaResponse, ImpactSummary } from './types';
+import { project, drawGistdaPolygons, CENTER_LAT, CENTER_LON } from './utils/threeHelpers';
+
+// Components
+import { LoadingOverlay } from './components/LoadingOverlay';
+import { Dashboard } from './components/Dashboard';
 import './styles.css';
 
-// --- Interfaces Definitions ---
-interface WeatherData {
-    current: {
-        rain: number;
-        showers: number;
-    };
-    daily: {
-        precipitation_sum: number[];
-    };
-}
-
-interface FloodData {
-    discharge: number;
-}
-
-interface GistdaData {
-    features: any[]; // ระบุ type ที่ชัดเจนกว่านี้ได้ถ้าทราบโครงสร้างข้อมูล
-}
-
-interface GistdaResponse {
-    success: boolean;
-    data: GistdaData;
-}
-
-// Type สำหรับฟังก์ชัน Project ที่จะส่งให้ส่วนอื่นใช้
-export type ProjectFunction = (lat: number, lon: number) => { x: number; z: number };
-
-// --- Constants ---
-const CENTER_LAT = 7.0075;
-const CENTER_LON = 100.4705;
-const METERS_PER_DEG_LAT = 111320;
-const METERS_PER_DEG_LON = 111320 * Math.cos(CENTER_LAT * Math.PI / 180);
-
 const App: React.FC = () => {
-    // State Typing
+    // --- State Management ---
     const [floodLevel, setFloodLevel] = useState<number>(0);
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [loadingStep, setLoadingStep] = useState<number>(0);
 
-    // Data State Typing
     const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
     const [floodData, setFloodData] = useState<FloodData | null>(null);
     const [gistdaData, setGistdaData] = useState<GistdaData | null>(null);
     const [gistdaError, setGistdaError] = useState<boolean>(false);
+    const [impactSummaries, setImpactSummaries] = useState<ImpactSummary[]>([]);
 
-    // Ref Typing (สำคัญมากสำหรับ Three.js)
+    // --- Refs ---
     const containerRef = useRef<HTMLDivElement>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const waterMeshRef = useRef<THREE.Mesh | null>(null);
     const rainSystemRef = useRef<THREE.Points | null>(null);
-    // เพิ่ม renderer ref เพื่อช่วยในการ clean up
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
     const requestRef = useRef<number | null>(null);
 
-    // Helper Function: Projection
-    const project: ProjectFunction = (lat: number, lon: number) => {
-        const x = (lon - CENTER_LON) * METERS_PER_DEG_LON;
-        const z = (CENTER_LAT - lat) * METERS_PER_DEG_LAT;
-        return { x, z };
+    // --- Logic: Summarize Impact ---
+    const summarizeImpact = (data: GistdaData) => {
+        const summaryMap: { [key: string]: number } = {};
+
+        data.features.forEach(feature => {
+            const tambon = feature.properties?.tb_tn;
+            const amphoe = feature.properties?.ap_tn;
+
+            let areaName = "พื้นที่ไม่ระบุชื่อ";
+            if (tambon && amphoe) {
+                areaName = `ต.${tambon} อ.${amphoe}`;
+            } else if (amphoe) {
+                areaName = `อ.${amphoe}`;
+            } else if (tambon) {
+                areaName = `ต.${tambon}`;
+            } else if (feature.properties?.id) {
+                areaName = `Area ID: ${feature.properties.id}`;
+            }
+
+            if (!summaryMap[areaName]) summaryMap[areaName] = 0;
+            summaryMap[areaName]++;
+        });
+
+        const summaries: ImpactSummary[] = Object.keys(summaryMap).map(key => ({
+            areaName: key,
+            count: summaryMap[key]
+        })).sort((a, b) => b.count - a.count);
+
+        setImpactSummaries(summaries);
     };
 
-    // Helper Function: Create Label
-    const createLabel = (text: string, x: number, y: number, z: number): THREE.Sprite => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return new THREE.Sprite(); // Handle null context
-
-        canvas.width = 512;
-        canvas.height = 128;
-        ctx.font = "bold 40px Sarabun, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.strokeStyle = "rgba(0,0,0,0.8)";
-        ctx.lineWidth = 8;
-        ctx.strokeText(text, 256, 64);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(text, 256, 64);
-
-        const texture = new THREE.CanvasTexture(canvas);
-        const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
-        const sprite = new THREE.Sprite(material);
-        sprite.scale.set(40, 10, 1);
-        sprite.position.set(x, y + 15, z);
-        sprite.renderOrder = 999;
-        return sprite;
-    };
-
+    // --- Main 3D Effect ---
     useEffect(() => {
         if (!containerRef.current || sceneRef.current) return;
 
         // 1. Setup Scene
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x111827);
-        scene.fog = new THREE.FogExp2(0x111827, 0.002);
+        // ปรับเป็นสีท้องฟ้ากลางวัน (Sky Blue) เพื่อแก้ปัญหาหน้าจอมืด
+        const skyColor = 0x87CEEB;
+        scene.background = new THREE.Color(skyColor);
+        // ปรับหมอกให้เข้ากับสีท้องฟ้า ลดความหนาลงเล็กน้อยเพื่อให้เห็นไกลขึ้น
+        scene.fog = new THREE.FogExp2(skyColor, 0.0015);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
         camera.position.set(0, 400, 500);
         camera.lookAt(0, 0, 0);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        // เพิ่ม logarithmicDepthBuffer: true เพื่อแก้ปัญหาสีแดงกระพริบ (Z-fighting)
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            logarithmicDepthBuffer: true
+        });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         containerRef.current.appendChild(renderer.domElement);
-        rendererRef.current = renderer; // เก็บไว้ล้างค่าทีหลัง
+        rendererRef.current = renderer;
 
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
         // 2. Lights
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-        scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-        dirLight.position.set(200, 400, 100);
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        hemiLight.position.set(0, 200, 0);
+        scene.add(hemiLight);
+
+        // DirectionalLight: แสงอาทิตย์หลัก
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0); // เพิ่มความเข้มแสง
+        dirLight.position.set(100, 500, 100); // ยกสูงขึ้นเหมือนดวงอาทิตย์เที่ยงวัน
         dirLight.castShadow = true;
         dirLight.shadow.mapSize.width = 2048;
         dirLight.shadow.mapSize.height = 2048;
@@ -131,6 +115,10 @@ const App: React.FC = () => {
         dirLight.shadow.camera.top = 500;
         dirLight.shadow.camera.bottom = -500;
         scene.add(dirLight);
+
+        // AmbientLight: แสงนวลๆ เสริม
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+        scene.add(ambientLight);
 
         // 3. Ground (OpenStreetMap)
         const zoom = 16;
@@ -141,7 +129,10 @@ const App: React.FC = () => {
         const mapUrl = `https://tile.openstreetmap.org/${zoom}/${tileX}/${tileY}.png`;
 
         const groundGeo = new THREE.PlaneGeometry(2000, 2000);
-        const groundMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.9 });
+        const groundMat = new THREE.MeshStandardMaterial({
+            color: 0xffffff,
+            roughness: 0.9
+        });
 
         loader.load(mapUrl, (tex) => {
             tex.wrapS = THREE.RepeatWrapping;
@@ -156,14 +147,14 @@ const App: React.FC = () => {
         ground.receiveShadow = true;
         scene.add(ground);
 
-        // 4. Water
+        // 4. Water (Simulated)
         const waterGeo = new THREE.PlaneGeometry(2000, 2000);
         const waterMat = new THREE.MeshStandardMaterial({
             color: 0x3b82f6,
             transparent: true,
-            opacity: 0.7,
-            roughness: 0.0,
-            metalness: 0.8
+            opacity: 0.6,
+            roughness: 0.1,
+            metalness: 0.1
         });
         const water = new THREE.Mesh(waterGeo, waterMat);
         water.rotation.x = -Math.PI / 2;
@@ -172,7 +163,7 @@ const App: React.FC = () => {
 
         sceneRef.current = scene;
 
-        // 5. Rain System
+        // 5. Rain System Helper
         const createRain = (): THREE.Points => {
             const rainCount = 15000;
             const rainGeo = new THREE.BufferGeometry();
@@ -190,7 +181,6 @@ const App: React.FC = () => {
         // 6. Data Initialization
         const initData = async () => {
             setLoadingStep(1);
-            // Typescript จะเตือนถ้า fetchWeather ไม่ return ตาม Interface WeatherData
             const weatherRes = await fetchWeather() as WeatherData;
             setWeatherData(weatherRes);
 
@@ -198,6 +188,8 @@ const App: React.FC = () => {
             const gistdaRes = await fetchGistdaData() as GistdaResponse;
             if (gistdaRes.success) {
                 setGistdaData(gistdaRes.data);
+                drawGistdaPolygons(gistdaRes.data, scene); // Use Helper from utils
+                summarizeImpact(gistdaRes.data);
             } else {
                 setGistdaError(true);
             }
@@ -206,12 +198,16 @@ const App: React.FC = () => {
             setFloodData(floodRes);
 
             setLoadingStep(3);
-            // ส่ง project function เข้าไปตามที่คุยกันไว้
-            // @ts-ignore (ถ้าไฟล์ api ยังเป็น JS อยู่ ให้ใส่ ignore ไว้ก่อน หรือไปแก้ไฟล์ api ให้รับ parameter นี้)
+            // โหลดตึก 3D และส่ง project function ไปให้
+            // @ts-ignore
             await fetchBuildings(scene, project);
 
-            if (weatherRes && weatherRes.current && (weatherRes.current.rain > 0 || weatherRes.current.showers > 0)) {
-                rainSystemRef.current = createRain();
+            // ตรวจสอบสภาพอากาศเพื่อสร้างฝน
+            if (weatherRes && weatherRes.current) {
+                const isRaining = weatherRes.current.rain > 0 || weatherRes.current.showers > 0;
+                if (isRaining) {
+                    rainSystemRef.current = createRain();
+                }
             }
 
             setLoadingStep(4);
@@ -224,10 +220,11 @@ const App: React.FC = () => {
             requestRef.current = requestAnimationFrame(animate);
             controls.update();
 
+            // Rain Animation
             if (rainSystemRef.current) {
                 const positions = rainSystemRef.current.geometry.attributes.position.array as Float32Array;
                 for (let i = 1; i < positions.length; i += 3) {
-                    positions[i] -= 2;
+                    positions[i] -= 4;
                     if (positions[i] < 0) positions[i] = 600;
                 }
                 rainSystemRef.current.geometry.attributes.position.needsUpdate = true;
@@ -243,11 +240,10 @@ const App: React.FC = () => {
         };
         window.addEventListener('resize', handleResize);
 
-        // Cleanup Function (ป้องกัน Memory Leak)
+        // Cleanup
         return () => {
             window.removeEventListener('resize', handleResize);
             if (requestRef.current) cancelAnimationFrame(requestRef.current);
-
             if (sceneRef.current) {
                 sceneRef.current.traverse((object) => {
                     if (object instanceof THREE.Mesh) {
@@ -262,16 +258,8 @@ const App: React.FC = () => {
                     }
                 });
             }
-
-            if (rendererRef.current) {
-                rendererRef.current.dispose();
-            }
-
-            if (containerRef.current) {
-                containerRef.current.innerHTML = '';
-            }
-
-            // Reset Refs
+            if (rendererRef.current) rendererRef.current.dispose();
+            if (containerRef.current) containerRef.current.innerHTML = '';
             sceneRef.current = null;
             rendererRef.current = null;
         };
@@ -285,71 +273,20 @@ const App: React.FC = () => {
     }, [floodLevel]);
 
     return (
-        <div className="relative w-full h-screen font-sans text-white">
+        <div className="relative w-full h-screen font-sans text-white overflow-hidden">
             <div ref={containerRef} id="canvas-container"></div>
 
-            {isLoading && (
-                <div className="loading-overlay">
-                    {/* ... Loading UI Code ... */}
-                    <div className="spinner"></div>
-                    <h2 className="text-2xl font-bold">กำลังเชื่อมต่อข้อมูล GISTDA...</h2>
-                    {/* ผมย่อส่วน UI loading เพื่อความกระชับ แต่ Logic ยังเหมือนเดิม */}
-                </div>
-            )}
-
-            {!isLoading && (
-                <div className="absolute top-4 left-4 z-50 w-80 bg-gray-900/90 backdrop-blur-md rounded-xl shadow-2xl p-6 border border-gray-700 transition-all duration-500 max-h-[90vh] overflow-y-auto">
-                    {/* ... Main UI Code ... */}
-                    <div className="flex items-center gap-3 mb-6 border-b border-gray-700 pb-4">
-                        <div className="bg-blue-600 p-2 rounded-lg">
-                            <i className="fa-solid fa-water text-white"></i>
-                        </div>
-                        <div>
-                            <h1 className="text-lg font-bold">Hat Yai Flood Sim</h1>
-                            <div className="text-xs text-gray-400 flex items-center gap-1">
-                                <div className="pulse-dot"></div> Live Data Connected
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* GISTDA Data Widget */}
-                    <div className="mb-4 bg-indigo-900/30 p-3 rounded-lg border border-indigo-800/50">
-                        {/* ... GISTDA UI ... */}
-                        {gistdaData ? (
-                            <div className="text-sm">
-                                <div className="flex justify-between mb-1">
-                                    <span className="text-gray-400">Features Found:</span>
-                                    <span className="text-white font-mono">
-                                        {gistdaData.features ? gistdaData.features.length : 0}
-                                    </span>
-                                </div>
-                            </div>
-                        ) : gistdaError ? (
-                            <div className="text-xs text-yellow-500">Connection Restricted</div>
-                        ) : (
-                            <div className="text-xs text-gray-500">Checking data...</div>
-                        )}
-                    </div>
-
-                    {/* Flood Controls */}
-                    <div className="space-y-6 pt-4 border-t border-gray-700">
-                        <div>
-                            <div className="flex justify-between mb-2">
-                                <label className="text-sm font-semibold text-gray-300">จำลองระดับน้ำ</label>
-                                <span className="text-sm font-bold text-blue-400">{floodLevel} m.</span>
-                            </div>
-                            <input
-                                type="range"
-                                min="0"
-                                max="30"
-                                step="0.5"
-                                value={floodLevel}
-                                onChange={(e) => setFloodLevel(Number(e.target.value))}
-                                className="w-full"
-                            />
-                        </div>
-                    </div>
-                </div>
+            {isLoading ? (
+                <LoadingOverlay loadingStep={loadingStep} />
+            ) : (
+                <Dashboard
+                    weatherData={weatherData}
+                    gistdaData={gistdaData}
+                    gistdaError={gistdaError}
+                    impactSummaries={impactSummaries}
+                    floodLevel={floodLevel}
+                    setFloodLevel={setFloodLevel}
+                />
             )}
         </div>
     );

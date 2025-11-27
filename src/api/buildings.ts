@@ -1,7 +1,5 @@
 import * as THREE from 'three';
 
-// ค่าคงที่สำหรับใช้ Query ข้อมูลจาก Overpass API เท่านั้น
-// (ส่วนการคำนวณพิกัดจะใช้ function project ที่ส่งมาจาก App.tsx เพื่อความแม่นยำ)
 const CENTER_LAT = 7.0075;
 const CENTER_LON = 100.4705;
 
