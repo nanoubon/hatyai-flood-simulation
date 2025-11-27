@@ -9,7 +9,7 @@ import { fetchRiverData } from './api/flood';
 import { fetchBuildings } from './api/buildings';
 
 // Types & Utils
-import { WeatherData, FloodData, GistdaData, GistdaResponse, ImpactSummary } from './types';
+import { WeatherData, FloodData, GistdaData, GistdaResponse, ImpactSummary } from './types.ts';
 import { project, drawGistdaPolygons, CENTER_LAT, CENTER_LON } from './utils/threeHelpers';
 
 // Components
@@ -74,11 +74,11 @@ const App: React.FC = () => {
 
         // 1. Setup Scene
         const scene = new THREE.Scene();
-        // ปรับเป็นสีท้องฟ้ากลางวัน (Sky Blue) เพื่อแก้ปัญหาหน้าจอมืด
-        const skyColor = 0x87CEEB;
+        // ปรับเป็นท้องฟ้าตอนกลางคืน (Dark Navy Blue)
+        const skyColor = 0x0c1445;
         scene.background = new THREE.Color(skyColor);
-        // ปรับหมอกให้เข้ากับสีท้องฟ้า ลดความหนาลงเล็กน้อยเพื่อให้เห็นไกลขึ้น
-        scene.fog = new THREE.FogExp2(skyColor, 0.0015);
+        // ปรับหมอกให้เข้ากับสีท้องฟ้า และหนาขึ้นเล็กน้อย
+        scene.fog = new THREE.FogExp2(skyColor, 0.0018);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 5000);
         camera.position.set(0, 400, 500);
@@ -99,25 +99,26 @@ const App: React.FC = () => {
         controls.enableDamping = true;
         controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
-        // 2. Lights
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        // 2. Lights (Night Theme)
+        // HemisphereLight: ให้แสงบรรยากาศโดยรวมแบบมืดๆ
+        const hemiLight = new THREE.HemisphereLight(0x404040, 0x101010, 1.5);
         hemiLight.position.set(0, 200, 0);
         scene.add(hemiLight);
 
-        // DirectionalLight: แสงอาทิตย์หลัก
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0); // เพิ่มความเข้มแสง
-        dirLight.position.set(100, 500, 100); // ยกสูงขึ้นเหมือนดวงอาทิตย์เที่ยงวัน
+        // DirectionalLight: แสงจันทร์ (Moonlight)
+        const dirLight = new THREE.DirectionalLight(0x8899ff, 0.2); // แสงสีฟ้าจางๆ
+        dirLight.position.set(200, 300, -300); // กำหนดทิศทางเหมือนดวงจันทร์
         dirLight.castShadow = true;
         dirLight.shadow.mapSize.width = 2048;
         dirLight.shadow.mapSize.height = 2048;
-        dirLight.shadow.camera.left = -500;
-        dirLight.shadow.camera.right = 500;
-        dirLight.shadow.camera.top = 500;
-        dirLight.shadow.camera.bottom = -500;
+        dirLight.shadow.camera.left = -1000;
+        dirLight.shadow.camera.right = 1000;
+        dirLight.shadow.camera.top = 1000;
+        dirLight.shadow.camera.bottom = -1000;
         scene.add(dirLight);
 
-        // AmbientLight: แสงนวลๆ เสริม
-        const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+        // AmbientLight: เพิ่มแสงสว่างโดยรวมไม่ให้มืดเกินไป
+        const ambientLight = new THREE.AmbientLight(0x404040, 1.0);
         scene.add(ambientLight);
 
         // 3. Ground (OpenStreetMap)

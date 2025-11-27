@@ -5,6 +5,7 @@ interface DashboardProps {
     weatherData: WeatherData | null;
     gistdaData: GistdaData | null;
     gistdaError: boolean;
+    gistdaErrorMessage: string;
     impactSummaries: ImpactSummary[];
     floodLevel: number;
     setFloodLevel: (level: number) => void;
@@ -14,6 +15,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     weatherData,
     gistdaData,
     gistdaError,
+    gistdaErrorMessage,
     impactSummaries,
     floodLevel,
     setFloodLevel
@@ -93,7 +95,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         </div>
 
                         {/* Area Summary List */}
-                        <div className="mt-3 space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                        <h2 className="text-sm font-semibold text-gray-300 mt-4 mb-2">รายชื่อพื้นที่เฝ้าระวัง</h2>
+                        <div className="mt-1 space-y-2 max-h-60 overflow-y-auto custom-scrollbar pr-2">
                             {impactSummaries.length > 0 ? (
                                 impactSummaries.map((item, index) => (
                                     <div key={index} className="flex justify-between items-center text-xs p-2 bg-black/30 rounded border border-gray-700/50 hover:bg-black/50 transition-colors">
@@ -117,9 +120,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         </div>
                     </div>
                 ) : gistdaError ? (
-                    <div className="text-xs text-yellow-500 flex items-center gap-2">
-                        <i className="fa-solid fa-triangle-exclamation"></i>
-                        ไม่สามารถดึงข้อมูล GISTDA ได้
+                    <div className="text-xs text-yellow-500 flex flex-col items-center text-center gap-1 p-2 bg-yellow-900/20 rounded-lg">
+                        <div className="flex items-center gap-2">
+                            <i className="fa-solid fa-triangle-exclamation"></i>
+                            <span>ไม่สามารถดึงข้อมูล GISTDA ได้</span>
+                        </div>
+                        <span className="text-gray-400 text-[10px] font-mono mt-1">{gistdaErrorMessage}</span>
                     </div>
                 ) : (
                     <div className="animate-pulse h-4 bg-gray-700 rounded w-1/2"></div>
